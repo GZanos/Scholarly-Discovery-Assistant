@@ -1035,8 +1035,8 @@ async function collectReferenceDerivedJournalSources(userData) {
       const oaPart = scoreOpenAlexSourceAgainstManuscript(src, userData);
       out.push({
         source: src,
-        rankScore: 168 + oaPart * 0.4,
-        displayScore: 138,
+        rankScore: 96 + oaPart * 0.35,
+        displayScore: 84,
         fitReasons: [
           `Your references include a work published in “${src.display_name || "this venue"}” (resolved via OpenAlex).`,
           "Treated as a high-priority venue match from your citation list."
@@ -1060,8 +1060,8 @@ async function collectReferenceDerivedJournalSources(userData) {
             const oaP = scoreOpenAlexSourceAgainstManuscript(full, userData);
             out.push({
               source: full,
-              rankScore: 122 + oaP * 0.35,
-              displayScore: 102,
+              rankScore: 72 + oaP * 0.3,
+              displayScore: 64,
               fitReasons: [
                 `Neighbourhood venue: publishes work citing “${seedTitle}…” — related to your reference graph (OpenAlex).`,
                 buildOpenAlexSourceFitReasons(full)[0] || "OpenAlex source match."
@@ -2095,7 +2095,7 @@ function scoreJournal(journal, userData) {
   const jNameLow = journal.name.toLowerCase();
   let refVenueBoost = 0;
   if (jNameLow.length >= 10 && refBlob.includes(jNameLow)) {
-    refVenueBoost += 68;
+    refVenueBoost += 22;
   } else {
     const jNameToks = tokenize(journal.name);
     const refToks = new Set(tokenize(refBlob));
@@ -2104,7 +2104,7 @@ function scoreJournal(journal, userData) {
       const t = jNameToks[ni];
       if (t.length > 4 && refToks.has(t)) nameHits += 1;
     }
-    if (nameHits >= 3) refVenueBoost += 48;
+    if (nameHits >= 3) refVenueBoost += 14;
   }
   score += refVenueBoost;
 
@@ -2148,7 +2148,7 @@ function scoreJournal(journal, userData) {
   }
   if (userData.selectedQuartiles.includes(journal.quartile)) fitReasons.push(`Matches your quartile filter (${journal.quartile})`);
   if (userData.selectedPublishers.includes(journal.publisher)) fitReasons.push(`Matches preferred publisher (${journal.publisher})`);
-  if (refVenueBoost >= 48) {
+  if (refVenueBoost >= 14) {
     fitReasons.push("Journal name (or distinctive title words) appears in your reference list—strong signal you already publish or cite this venue family.");
   }
   if (!fitReasons.length) fitReasons.push("Weak direct match—results are heuristic from your text vs. this app’s journal catalogue");
@@ -2168,33 +2168,35 @@ function collectFormData() {
 
   const selectedQuartiles = [...document.querySelectorAll('input[name="quartile"]:checked')].map((el) => el.value);
   const selectedPublishers = [...document.querySelectorAll('input[name="publisher"]:checked')].map((el) => el.value);
-  const resultCount = Number(document.getElementById("resultCount").value || "5");
+  const rawCount = Number(document.getElementById("resultCount").value || "5");
+  const resultCount = Math.max(1, Math.min(100, Number.isFinite(rawCount) ? Math.round(rawCount) : 5));
 
   return {
     keywords,
     titleAbstract,
     methodology,
     references,
-    selectedQuartiles,
-    selectedPublishers,
+    selectedQuartiles: selectedQuartiles.length ? selectedQuartiles : ["Q1", "Q2", "Q3", "Q4"],
+    selectedPublishers: selectedPublishers.length ? selectedPublishers : uniquePublishers.slice(),
     resultCount
   };
 }
 
 function validate(data) {
-  if (!data.keywords || !data.titleAbstract || !data.methodology) {
-    return "Please fill in keywords, title/abstract, and methodology.";
-  }
-  if (data.references.length < 3) {
-    return "Please provide at least 3 APA references (one per line).";
-  }
-  if (!data.selectedQuartiles.length) {
-    return "Select at least one quartile (Q1-Q4).";
-  }
-  if (!data.selectedPublishers.length) {
-    return "Select at least one preferred publisher.";
+  if (!data.keywords && !data.titleAbstract && !data.methodology && !data.references.length) {
+    return "Please provide at least one substantive input (keywords, title/abstract, methodology, or references).";
   }
   return "";
+}
+
+function journalMissingFieldWarning(data) {
+  const missing = [];
+  if (!data.keywords) missing.push("keywords");
+  if (!data.titleAbstract) missing.push("title/abstract");
+  if (!data.methodology) missing.push("methodology");
+  if (!data.references.length) missing.push("references");
+  if (!missing.length) return "";
+  return `Warning: blank fields (${missing.join(", ")}) may reduce recommendation accuracy.`;
 }
 
 function normalizeJournalKey(name) {
@@ -2392,7 +2394,36 @@ async function buildMergedJournalMatches(userData) {
   }
 
   const sorted = [...pool.values()].sort((a, b) => b.rankScore - a.rankScore);
-  return sorted.slice(0, n);
+  const picked = [];
+  const publisherCounts = new Map();
+  const fieldCounts = new Map();
+  const remaining = sorted.slice();
+  while (remaining.length && picked.length < n) {
+    let bestIdx = 0;
+    let bestEff = -Infinity;
+    for (let i = 0; i < remaining.length; i += 1) {
+      const c = remaining[i];
+      const curated = c.curated && c.curated.journal ? c.curated.journal : null;
+      const pub = curated ? curated.publisher : "";
+      const field = curated ? curated.researchField || "" : "";
+      const pCount = pub ? publisherCounts.get(pub) || 0 : 0;
+      const fCount = field ? fieldCounts.get(field) || 0 : 0;
+      const diversityPenalty = pCount * 10 + fCount * 12;
+      const eff = c.rankScore - diversityPenalty;
+      if (eff > bestEff) {
+        bestEff = eff;
+        bestIdx = i;
+      }
+    }
+    const chosen = remaining.splice(bestIdx, 1)[0];
+    picked.push(chosen);
+    const curated = chosen.curated && chosen.curated.journal ? chosen.curated.journal : null;
+    if (curated) {
+      if (curated.publisher) publisherCounts.set(curated.publisher, (publisherCounts.get(curated.publisher) || 0) + 1);
+      if (curated.researchField) fieldCounts.set(curated.researchField, (fieldCounts.get(curated.researchField) || 0) + 1);
+    }
+  }
+  return picked;
 }
 
 function renderMergedJournalResults(items, userData) {
@@ -2645,12 +2676,12 @@ function similarityToSeedWork(seedWork, candidateWork) {
     if (gap >= 10) yearPenalty += 8;
   }
 
-  let raw = titleJac * 56 + absJac * 22 + globalJac * 20;
+  let raw = titleJac * 52 + absJac * 26 + globalJac * 22;
   if (titleJac < 0.06 && absJac < 0.035) raw *= 0.72;
   raw -= methodPenalty + yearPenalty;
-  raw = Math.max(1, Math.min(95, raw));
-  const strict = Math.pow(raw / 100, 1.55) * 100;
-  return Math.max(1, Math.min(95, Math.round(strict)));
+  raw = Math.max(3, Math.min(92, raw));
+  const strict = Math.pow(raw / 100, 1.18) * 100;
+  return Math.max(2, Math.min(92, Math.round(strict)));
 }
 
 async function fetchOpenAlexWorkById(idUrl) {
@@ -2681,7 +2712,7 @@ async function fetchNetworkCandidateWorks(seedWork) {
   if (seedTitle) {
     try {
       const sRes = await fetch(
-        `https://api.openalex.org/works?search=${encodeURIComponent(seedTitle)}&per_page=25&mailto=${OPENALEX_MAILTO}`
+        `https://api.openalex.org/works?search=${encodeURIComponent(seedTitle)}&per_page=60&mailto=${OPENALEX_MAILTO}`
       );
       if (sRes.ok) {
         const sJson = await sRes.json();
@@ -2695,7 +2726,7 @@ async function fetchNetworkCandidateWorks(seedWork) {
   if (seedW) {
     try {
       const cRes = await fetch(
-        `https://api.openalex.org/works?filter=cites:${seedW}&per_page=35&mailto=${OPENALEX_MAILTO}`
+        `https://api.openalex.org/works?filter=cites:${seedW}&per_page=120&mailto=${OPENALEX_MAILTO}`
       );
       if (cRes.ok) {
         const cJson = await cRes.json();
@@ -2710,14 +2741,35 @@ async function fetchNetworkCandidateWorks(seedWork) {
   if (refs.length) {
     const refWorks = await Promise.all(refs.map((idUrl) => fetchOpenAlexWorkById(idUrl)));
     refWorks.forEach((w) => pushIf(w, "referenced-by-seed"));
+    const refMagIds = refWorks.map((w) => extractOpenAlexW(w && w.id)).filter(Boolean).slice(0, 5);
+    for (let i = 0; i < refMagIds.length; i += 1) {
+      try {
+        const cr = await fetch(
+          `https://api.openalex.org/works?filter=cites:${refMagIds[i]}&per_page=20&mailto=${OPENALEX_MAILTO}`
+        );
+        if (!cr.ok) continue;
+        const cj = await cr.json();
+        (cj.results || []).forEach((w) => pushIf(w, "neighbourhood-citer"));
+      } catch {
+        /* skip */
+      }
+    }
   }
 
-  return merged.slice(0, 70);
+  const related = Array.isArray(seedWork.related_works) ? seedWork.related_works.slice(0, 30) : [];
+  if (related.length) {
+    const relWorks = await Promise.all(related.map((idUrl) => fetchOpenAlexWorkById(idUrl)));
+    relWorks.forEach((w) => pushIf(w, "related-work"));
+  }
+
+  return merged.slice(0, 160);
 }
 
 function relationLabel(relType) {
   if (relType === "cites-seed") return "Cites your seed paper";
   if (relType === "referenced-by-seed") return "Referenced by your seed paper";
+  if (relType === "neighbourhood-citer") return "Cites papers in your seed paper neighbourhood";
+  if (relType === "related-work") return "OpenAlex related-work graph";
   return "Topically similar (title/abstract search)";
 }
 
@@ -3105,13 +3157,21 @@ function collectLiteratureData() {
 }
 
 function validateLiteratureData(data) {
-  if (!data.ideaKeywords || !data.domainInfo || !data.ideaDescription) {
-    return "Please fill in keywords, domain information, and idea description.";
-  }
-  if (data.seedCitations.length < 2) {
-    return "Please provide at least 2 relevant citations.";
+  if (!data.ideaKeywords && !data.domainInfo && !data.ideaDescription && !data.seedCitations.length && !data.mostImportantTheme) {
+    return "Please provide at least one input (theme, keywords, domain, idea description, or seed citations).";
   }
   return "";
+}
+
+function literatureMissingFieldWarning(data) {
+  const missing = [];
+  if (!data.mostImportantTheme) missing.push("theme");
+  if (!data.ideaKeywords) missing.push("keywords");
+  if (!data.domainInfo) missing.push("domain information");
+  if (!data.ideaDescription) missing.push("idea description");
+  if (!data.seedCitations.length) missing.push("seed citations");
+  if (!missing.length) return "";
+  return `Warning: blank fields (${missing.join(", ")}) may reduce literature search accuracy.`;
 }
 
 function enrichLiteratureRow(paper, userData) {
@@ -3351,6 +3411,7 @@ if (form) {
       if (validationEl) validationEl.textContent = validationError;
       return;
     }
+    const journalWarning = journalMissingFieldWarning(data);
 
     if (resultsEl) {
       resultsEl.innerHTML =
@@ -3360,10 +3421,10 @@ if (form) {
     try {
       const merged = await buildMergedJournalMatches(data);
       renderMergedJournalResults(merged, data);
-      if (validationEl) validationEl.textContent = "";
+      if (validationEl) validationEl.textContent = journalWarning || "";
     } catch (err) {
       if (validationEl) {
-        validationEl.textContent = `OpenAlex journal search failed (${err.message}). Showing curated catalogue only.`;
+        validationEl.textContent = `${journalWarning ? `${journalWarning} ` : ""}OpenAlex journal search failed (${err.message}). Showing curated catalogue only.`;
       }
       const top = JOURNALS.map((journal) => scoreJournal(journal, data))
         .sort((a, b) => b.score - a.score)
@@ -3433,6 +3494,7 @@ if (literatureForm) {
       if (literatureScholarBarEl) literatureScholarBarEl.hidden = true;
       return;
     }
+    const literatureWarning = literatureMissingFieldWarning(data);
 
     literatureLastUserData = data;
     literatureDeepRows = [];
@@ -3449,14 +3511,14 @@ if (literatureForm) {
       if (literatureValidationEl) {
         if (!rankedPapers.length) {
           literatureValidationEl.textContent =
-            "Live APIs still returned no works for this query; showing ranked offline catalog instead. Try shorter keywords or open Google Scholar via the link below.";
+            `${literatureWarning ? `${literatureWarning} ` : ""}Live APIs still returned no works for this query; showing ranked offline catalog instead. Try shorter keywords or open Google Scholar via the link below.`;
         } else {
-          literatureValidationEl.textContent = "";
+          literatureValidationEl.textContent = literatureWarning || "";
         }
       }
     } catch (err) {
       if (literatureValidationEl) {
-        literatureValidationEl.textContent = `Live search failed (${err.message}). Using offline catalog.`;
+        literatureValidationEl.textContent = `${literatureWarning ? `${literatureWarning} ` : ""}Live search failed (${err.message}). Using offline catalog.`;
       }
       literaturePrimaryRows = fallbackLocalLiterature(data);
     }
