@@ -98,16 +98,16 @@
         <h2>Journal Search Inputs</h2>
         <form id="journalForm">
           <label for="keywords">1) Keywords (comma-separated)</label>
-          <input id="keywords" name="keywords" type="text" placeholder="e.g., fuzzy Bayesian, multiple imputation, missing data" required />
+          <input id="keywords" name="keywords" type="text" placeholder="e.g., fuzzy Bayesian, multiple imputation, missing data" />
 
           <label for="titleAbstract">2) Title and Abstract</label>
-          <textarea id="titleAbstract" name="titleAbstract" rows="6" placeholder="Paste your paper title and abstract..." required></textarea>
+          <textarea id="titleAbstract" name="titleAbstract" rows="6" placeholder="Paste your paper title and abstract..."></textarea>
 
           <label for="methodology">3) Methodology (a few sentences)</label>
-          <textarea id="methodology" name="methodology" rows="4" placeholder="Describe your methods..." required></textarea>
+          <textarea id="methodology" name="methodology" rows="4" placeholder="Describe your methods..."></textarea>
 
           <label for="references">4) Top References (APA style, at least 3)</label>
-          <textarea id="references" name="references" rows="6" placeholder="One APA citation per line..." required></textarea>
+          <textarea id="references" name="references" rows="6" placeholder="One APA citation per line..."></textarea>
 
           <fieldset>
             <legend>5) Target Quartile (multi-select)</legend>
@@ -125,11 +125,7 @@
           </fieldset>
 
           <label for="resultCount">7) Number of journal matches</label>
-          <select id="resultCount" name="resultCount">
-            <option value="3">3</option>
-            <option value="5" selected>5</option>
-            <option value="10">10</option>
-          </select>
+          <input id="resultCount" name="resultCount" type="number" min="1" max="100" step="1" value="5" />
 
           <button type="submit" class="primary-btn">Find Journal Matches</button>
         </form>
@@ -183,16 +179,16 @@
           />
 
           <label for="ideaKeywords">1) Idea Keywords (comma-separated)</label>
-          <input id="ideaKeywords" name="ideaKeywords" type="text" placeholder="e.g., fuzzy inference systems, interpretable ML, uncertainty" required />
+          <input id="ideaKeywords" name="ideaKeywords" type="text" placeholder="e.g., fuzzy inference systems, interpretable ML, uncertainty" />
 
           <label for="domainInfo">2) Domain Information</label>
-          <textarea id="domainInfo" name="domainInfo" rows="3" placeholder="e.g., machine learning, computational statistics, decision systems" required></textarea>
+          <textarea id="domainInfo" name="domainInfo" rows="3" placeholder="e.g., machine learning, computational statistics, decision systems"></textarea>
 
           <label for="ideaDescription">3) Key Idea Description</label>
-          <textarea id="ideaDescription" name="ideaDescription" rows="5" placeholder="Describe the new research idea and intended contribution..." required></textarea>
+          <textarea id="ideaDescription" name="ideaDescription" rows="5" placeholder="Describe the new research idea and intended contribution..."></textarea>
 
           <label for="seedCitations">4) Most Relevant Citations (2-3 APA citations)</label>
-          <textarea id="seedCitations" name="seedCitations" rows="5" placeholder="Provide 2-3 core citations, one per line..." required></textarea>
+          <textarea id="seedCitations" name="seedCitations" rows="5" placeholder="Provide 2-3 core citations, one per line..."></textarea>
 
           <label for="literatureCount">5) Number of papers to return</label>
           <select id="literatureCount" name="literatureCount"></select>
