@@ -10,14 +10,20 @@
     window.sdaSwitchTab = function (which) {
       var j = document.getElementById("journalView");
       var l = document.getElementById("literatureView");
+      var n = document.getElementById("networkView");
       var tj = document.getElementById("tabJournal");
       var tl = document.getElementById("tabLiterature");
-      if (!j || !l || !tj || !tl) return;
+      var tn = document.getElementById("tabNetwork");
+      if (!j || !l || !n || !tj || !tl || !tn) return;
       var isJ = which === "journal";
+      var isL = which === "literature";
+      var isN = which === "network";
       tj.classList.toggle("active", isJ);
-      tl.classList.toggle("active", !isJ);
+      tl.classList.toggle("active", isL);
+      tn.classList.toggle("active", isN);
       j.classList.toggle("active-workspace", isJ);
-      l.classList.toggle("active-workspace", !isJ);
+      l.classList.toggle("active-workspace", isL);
+      n.classList.toggle("active-workspace", isN);
     };
   </script>
 </head>
@@ -63,6 +69,9 @@
       </button>
       <button id="tabLiterature" class="tab-btn" type="button" onclick="sdaSwitchTab('literature')">
         Literature Search
+      </button>
+      <button id="tabNetwork" class="tab-btn" type="button" onclick="sdaSwitchTab('network')">
+        Literature Network Search
       </button>
     </section>
 
@@ -211,7 +220,52 @@
         </div>
       </section>
     </section>
+
+    <section id="networkView" class="workspace">
+      <section class="card">
+        <h2>Literature Network Search</h2>
+        <form id="networkForm">
+          <label for="networkApaInput">Enter paper of interest in APA citation</label>
+          <textarea
+            id="networkApaInput"
+            name="networkApaInput"
+            rows="4"
+            placeholder="e.g., Doe, J., & Smith, A. (2022). Title of paper. Journal Name, 10(2), 123-140. https://doi.org/10.xxxx/xxxx"
+            required
+          ></textarea>
+          <p class="note">
+            The app resolves this citation, retrieves related works from OpenAlex, scores similarity, and places more similar papers closer to your seed paper in a network graph.
+            Google Scholar does not provide an official API for direct in-app querying.
+          </p>
+          <button type="submit" class="primary-btn">Build Literature Network</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Network Results</h2>
+        <div id="networkValidation" class="validation"></div>
+        <div class="literature-actions">
+          <button id="networkExpandBtn" type="button" class="secondary-btn" disabled>Enlarge network graph</button>
+        </div>
+        <div id="networkGraph" class="network-graph">
+          <p class="placeholder">Submit one APA citation to generate a similarity network.</p>
+        </div>
+        <div id="networkList" class="results"></div>
+      </section>
+    </section>
   </main>
+
+  <div id="networkModal" class="network-modal" hidden>
+    <div class="network-modal-inner">
+      <div class="network-modal-header">
+        <h3>Literature Network Graph</h3>
+        <button id="networkModalCloseBtn" type="button" class="secondary-btn">Close full page</button>
+      </div>
+      <div id="networkModalGraph" class="network-graph network-graph-modal"></div>
+    </div>
+  </div>
+
+  <div id="networkTooltip" class="network-tooltip" hidden></div>
 
   <script src="app.js"></script>
 </body>

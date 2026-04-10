@@ -767,19 +767,34 @@ const literatureResultsEl = document.getElementById("literatureResults");
 const literatureValidationEl = document.getElementById("literatureValidation");
 const tabJournal = document.getElementById("tabJournal");
 const tabLiterature = document.getElementById("tabLiterature");
+const tabNetwork = document.getElementById("tabNetwork");
 const journalView = document.getElementById("journalView");
 const literatureView = document.getElementById("literatureView");
+const networkView = document.getElementById("networkView");
 const literatureCountSelect = document.getElementById("literatureCount");
 const deepDiveBtn = document.getElementById("deepDiveBtn");
 const exportLiteratureExcelBtn = document.getElementById("exportLiteratureExcelBtn");
 const literatureDisclaimerEl = document.getElementById("literatureDisclaimer");
 const resetAppBtn = document.getElementById("resetAppBtn");
+const networkForm = document.getElementById("networkForm");
+const networkApaInputEl = document.getElementById("networkApaInput");
+const networkValidationEl = document.getElementById("networkValidation");
+const networkGraphEl = document.getElementById("networkGraph");
+const networkListEl = document.getElementById("networkList");
+const networkExpandBtn = document.getElementById("networkExpandBtn");
+const networkModalEl = document.getElementById("networkModal");
+const networkModalGraphEl = document.getElementById("networkModalGraph");
+const networkModalCloseBtn = document.getElementById("networkModalCloseBtn");
+const networkTooltipEl = document.getElementById("networkTooltip");
 
 let literaturePrimaryRows = [];
 let literatureDeepRows = [];
 let literatureLastUserData = null;
 let catalogueCursorState = null;
 let catalogueAccumulatedResults = [];
+let networkLastSeed = null;
+let networkLastRows = [];
+let networkTooltipPinned = false;
 
 const uniquePublishers = [...new Set(JOURNALS.map((j) => j.publisher))].sort();
 
@@ -2559,21 +2574,416 @@ function switchJournalSubtab(which) {
   if (!isMatch) renderCatalogueResults(true);
 }
 
+function networkWorkText(work) {
+  const t = work && (work.display_name || work.title) ? work.display_name || work.title : "";
+  const a = work ? openAlexAbstractToText(work.abstract_inverted_index) : "";
+  return `${t} ${a}`.toLowerCase();
+}
+
+function jaccardSet(aSet, bSet) {
+  const a = aSet instanceof Set ? aSet : new Set(aSet || []);
+  const b = bSet instanceof Set ? bSet : new Set(bSet || []);
+  if (!a.size && !b.size) return 0;
+  let inter = 0;
+  for (const t of a) {
+    if (b.has(t)) inter += 1;
+  }
+  const uni = a.size + b.size - inter;
+  return uni > 0 ? inter / uni : 0;
+}
+
+function networkMethodFlags(textLower) {
+  const t = String(textLower || "");
+  return {
+    bayesian: /\bbayes|bayesian|mcmc|posterior\b/i.test(t),
+    fuzzy: /\bfuzzy|fuzzification|defuzzification\b/i.test(t),
+    deep: /\bdeep\s+learning|neural\s+network|cnn\b|transformer\b/i.test(t),
+    tree: /\bdecision\s+tree|random\s+forest|xgboost|gradient\s+boost/i.test(t),
+    svm: /\bsvm|support\s+vector\s+machine\b/i.test(t),
+    remote: /\bremote\s+sensing|satellite|landsat|sentinel|earth\s+observation\b/i.test(t),
+    simulation: /\bsimulation|monte\s+carlo|synthetic\s+data\b/i.test(t),
+    optimization: /\boptimization|integer\s+programming|linear\s+programming|heuristic\b/i.test(t),
+    causal: /\bcausal|instrumental\s+variable|difference[-\s]in[-\s]differences\b/i.test(t)
+  };
+}
+
+function similarityToSeedWork(seedWork, candidateWork) {
+  const seedTitle = String(seedWork && (seedWork.display_name || seedWork.title) ? seedWork.display_name || seedWork.title : "");
+  const candTitle = String(
+    candidateWork && (candidateWork.display_name || candidateWork.title) ? candidateWork.display_name || candidateWork.title : ""
+  );
+  const seedAbs = openAlexAbstractToText(seedWork && seedWork.abstract_inverted_index);
+  const candAbs = openAlexAbstractToText(candidateWork && candidateWork.abstract_inverted_index);
+
+  const seedTitleSet = new Set(tokenize(seedTitle.toLowerCase()));
+  const candTitleSet = new Set(tokenize(candTitle.toLowerCase()));
+  const seedAbsSet = new Set(tokenize(seedAbs.toLowerCase()));
+  const candAbsSet = new Set(tokenize(candAbs.toLowerCase()));
+
+  const titleJac = jaccardSet(seedTitleSet, candTitleSet);
+  const absJac = jaccardSet(seedAbsSet, candAbsSet);
+  const allSeed = new Set([...seedTitleSet, ...seedAbsSet]);
+  const allCand = new Set([...candTitleSet, ...candAbsSet]);
+  const globalJac = jaccardSet(allSeed, allCand);
+
+  const seedFlags = networkMethodFlags(`${seedTitle} ${seedAbs}`.toLowerCase());
+  const candFlags = networkMethodFlags(`${candTitle} ${candAbs}`.toLowerCase());
+  let methodPenalty = 0;
+  const keys = Object.keys(seedFlags);
+  for (let i = 0; i < keys.length; i += 1) {
+    const k = keys[i];
+    if (seedFlags[k] && !candFlags[k]) methodPenalty += 4.2;
+  }
+  methodPenalty = Math.min(26, methodPenalty);
+
+  const seedY = seedWork && seedWork.publication_year ? Number(seedWork.publication_year) : null;
+  const candY = candidateWork && candidateWork.publication_year ? Number(candidateWork.publication_year) : null;
+  let yearPenalty = 0;
+  if (seedY && candY) {
+    const gap = Math.abs(seedY - candY);
+    if (gap >= 5) yearPenalty += 6;
+    if (gap >= 10) yearPenalty += 8;
+  }
+
+  let raw = titleJac * 56 + absJac * 22 + globalJac * 20;
+  if (titleJac < 0.06 && absJac < 0.035) raw *= 0.72;
+  raw -= methodPenalty + yearPenalty;
+  raw = Math.max(1, Math.min(95, raw));
+  const strict = Math.pow(raw / 100, 1.55) * 100;
+  return Math.max(1, Math.min(95, Math.round(strict)));
+}
+
+async function fetchOpenAlexWorkById(idUrl) {
+  if (!idUrl) return null;
+  try {
+    const res = await fetch(`${idUrl}?mailto=${OPENALEX_MAILTO}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchNetworkCandidateWorks(seedWork) {
+  const merged = [];
+  const seen = new Set();
+  const seedTitle = String(seedWork.display_name || seedWork.title || "").slice(0, 220);
+  const seedW = extractOpenAlexW(seedWork.id);
+
+  const pushIf = (w, relType) => {
+    if (!w || !w.id || seen.has(w.id)) return;
+    if (!isAcceptableOpenAlexLiteratureWork(w)) return;
+    if (w.id === seedWork.id) return;
+    seen.add(w.id);
+    merged.push({ work: w, relType });
+  };
+
+  if (seedTitle) {
+    try {
+      const sRes = await fetch(
+        `https://api.openalex.org/works?search=${encodeURIComponent(seedTitle)}&per_page=25&mailto=${OPENALEX_MAILTO}`
+      );
+      if (sRes.ok) {
+        const sJson = await sRes.json();
+        (sJson.results || []).forEach((w) => pushIf(w, "title-search"));
+      }
+    } catch {
+      /* skip */
+    }
+  }
+
+  if (seedW) {
+    try {
+      const cRes = await fetch(
+        `https://api.openalex.org/works?filter=cites:${seedW}&per_page=35&mailto=${OPENALEX_MAILTO}`
+      );
+      if (cRes.ok) {
+        const cJson = await cRes.json();
+        (cJson.results || []).forEach((w) => pushIf(w, "cites-seed"));
+      }
+    } catch {
+      /* skip */
+    }
+  }
+
+  const refs = Array.isArray(seedWork.referenced_works) ? seedWork.referenced_works.slice(0, 16) : [];
+  if (refs.length) {
+    const refWorks = await Promise.all(refs.map((idUrl) => fetchOpenAlexWorkById(idUrl)));
+    refWorks.forEach((w) => pushIf(w, "referenced-by-seed"));
+  }
+
+  return merged.slice(0, 70);
+}
+
+function relationLabel(relType) {
+  if (relType === "cites-seed") return "Cites your seed paper";
+  if (relType === "referenced-by-seed") return "Referenced by your seed paper";
+  return "Topically similar (title/abstract search)";
+}
+
+function buildNetworkSvg(seedWork, rankedRows) {
+  const width = 900;
+  const height = 560;
+  const cx = 450;
+  const cy = 280;
+  const seedTitle = String(seedWork.display_name || seedWork.title || "Seed paper");
+  const maxNodes = Math.min(24, rankedRows.length);
+  const nodes = rankedRows.slice(0, maxNodes);
+  const simVals = nodes.map((n) => Number(n.similarity || 0));
+  const minSim = simVals.length ? Math.min(...simVals) : 0;
+  const maxSim = simVals.length ? Math.max(...simVals) : 100;
+  const simRange = Math.max(1, maxSim - minSim);
+
+  const edgeSvg = [];
+  const nodeSvg = [];
+  const textSvg = [];
+  const step = (Math.PI * 2) / Math.max(1, nodes.length);
+
+  for (let i = 0; i < nodes.length; i += 1) {
+    const item = nodes[i];
+    const sim = item.similarity;
+    const simNorm = Math.max(0, Math.min(1, (sim - minSim) / simRange));
+    const closeWeight = Math.pow(simNorm, 0.42);
+    const minDist = 54;
+    const maxDist = 355;
+    const dist = maxDist - closeWeight * (maxDist - minDist);
+    const angle = step * i;
+    const x = cx + Math.cos(angle) * dist;
+    const y = cy + Math.sin(angle) * dist;
+    const r = 5.8 + simNorm * 9.6;
+    const op = 0.16 + simNorm * 0.72;
+    const label = `${i + 1} (${sim}%)`;
+    const nodeColor = simNorm > 0.72 ? "#2563eb" : simNorm > 0.38 ? "#3b82f6" : "#60a5fa";
+    edgeSvg.push(
+      `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(
+        1
+      )}" stroke="#93c5fd" stroke-width="${(0.9 + simNorm * 1.6).toFixed(2)}" stroke-opacity="${op.toFixed(2)}" />`
+    );
+    nodeSvg.push(
+      `<circle cx="${(x + 2.2).toFixed(1)}" cy="${(y + 2.6).toFixed(1)}" r="${(r + 0.15).toFixed(
+        1
+      )}" fill="#0f172a" fill-opacity="0.18"></circle>`
+    );
+    nodeSvg.push(
+      `<circle class="network-node" data-node-idx="${i}" cx="${x.toFixed(1)}" cy="${y.toFixed(
+        1
+      )}" r="${r.toFixed(1)}" fill="${nodeColor}" fill-opacity="0.95"></circle>`
+    );
+    nodeSvg.push(
+      `<circle cx="${(x - r * 0.28).toFixed(1)}" cy="${(y - r * 0.32).toFixed(1)}" r="${(r * 0.42).toFixed(
+        1
+      )}" fill="#ffffff" fill-opacity="0.38"></circle>`
+    );
+    textSvg.push(
+      `<text x="${(x + 10).toFixed(1)}" y="${(y + 4).toFixed(
+        1
+      )}" font-size="11" font-weight="700" fill="#0f172a">${escapeHtml(label)}</text>`
+    );
+  }
+
+  const seedNode = `
+    <circle cx="${cx + 2}" cy="${cy + 2.8}" r="20.5" fill="#0f172a" fill-opacity="0.2"></circle>
+    <circle cx="${cx}" cy="${cy}" r="20" fill="url(#seedGrad)" filter="url(#seedGlow)"><title>${escapeHtml(seedTitle)}</title></circle>
+    <circle cx="${cx - 6.2}" cy="${cy - 7.4}" r="6.2" fill="#ffffff" fill-opacity="0.34"></circle>
+  `;
+  const seedText = `<text x="${cx + 27}" y="${cy + 5}" font-size="13" font-weight="700" fill="#0f172a">Seed paper</text>`;
+
+  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Literature similarity network graph">
+    <defs>
+      <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#f8fbff" />
+        <stop offset="100%" stop-color="#eef2ff" />
+      </linearGradient>
+      <radialGradient id="seedGrad" cx="32%" cy="28%" r="78%">
+        <stop offset="0%" stop-color="#8b5cf6" />
+        <stop offset="100%" stop-color="#5b21b6" />
+      </radialGradient>
+      <filter id="seedGlow" x="-60%" y="-60%" width="220%" height="220%">
+        <feGaussianBlur stdDeviation="3.5" result="b" />
+        <feMerge>
+          <feMergeNode in="b" />
+          <feMergeNode in="SourceGraphic" />
+        </feMerge>
+      </filter>
+    </defs>
+    <rect x="0" y="0" width="${width}" height="${height}" fill="url(#bgGrad)" />
+    <circle cx="${cx}" cy="${cy}" r="365" fill="none" stroke="#dbeafe" stroke-width="1.2"></circle>
+    <circle cx="${cx}" cy="${cy}" r="255" fill="none" stroke="#e2e8f0" stroke-width="1"></circle>
+    <circle cx="${cx}" cy="${cy}" r="145" fill="none" stroke="#e5e7eb" stroke-width="1"></circle>
+    ${edgeSvg.join("")}
+    ${seedNode}
+    ${seedText}
+    ${nodeSvg.join("")}
+    ${textSvg.join("")}
+  </svg>`;
+}
+
+function hideNetworkTooltip() {
+  if (!networkTooltipEl) return;
+  if (networkTooltipPinned) return;
+  networkTooltipEl.hidden = true;
+  networkTooltipEl.innerHTML = "";
+}
+
+function showNetworkTooltip(row, clientX, clientY) {
+  if (!networkTooltipEl || !row) return;
+  const abstract = escapeHtml(String(row.abstract || "No abstract available.").slice(0, 460));
+  const cit = Number(row.citationCount || 0).toLocaleString();
+  const scholar = toScholarUrl(`${row.title} ${row.year || ""}`);
+  networkTooltipEl.innerHTML = `
+    <div><strong>${escapeHtml(String(row.title).slice(0, 160))}</strong></div>
+    <div><strong>Similarity:</strong> ${escapeHtml(String(row.similarity))}%</div>
+    <div><strong>Year:</strong> ${escapeHtml(String(row.year || "n.d."))}</div>
+    <div><strong>Citations:</strong> ${escapeHtml(cit)}</div>
+    <div class="network-tooltip-abs">${abstract}</div>
+    <div><a href="${escapeHtml(scholar)}" target="_blank" rel="noopener noreferrer">Google Scholar</a></div>
+  `;
+  networkTooltipEl.hidden = false;
+  networkTooltipEl.style.pointerEvents = "none";
+  networkTooltipEl.style.left = `${clientX + 14}px`;
+  networkTooltipEl.style.top = `${clientY + 14}px`;
+}
+
+function pinNetworkTooltip(row) {
+  if (!networkTooltipEl || !row) return;
+  networkTooltipPinned = true;
+  const abstract = escapeHtml(String(row.abstract || "No abstract available.").slice(0, 460));
+  const cit = Number(row.citationCount || 0).toLocaleString();
+  const scholar = toScholarUrl(`${row.title} ${row.year || ""}`);
+  networkTooltipEl.innerHTML = `
+    <div><strong>${escapeHtml(String(row.title).slice(0, 170))}</strong></div>
+    <div><strong>Similarity:</strong> ${escapeHtml(String(row.similarity))}%</div>
+    <div><strong>Year:</strong> ${escapeHtml(String(row.year || "n.d."))}</div>
+    <div><strong>Citations:</strong> ${escapeHtml(cit)}</div>
+    <div class="network-tooltip-abs">${abstract}</div>
+    <div><a href="${escapeHtml(scholar)}" target="_blank" rel="noopener noreferrer">Google Scholar</a></div>
+    <div class="network-tooltip-note">Click outside to close this detail panel.</div>
+  `;
+  networkTooltipEl.hidden = false;
+  networkTooltipEl.style.pointerEvents = "auto";
+  networkTooltipEl.style.left = "16px";
+  networkTooltipEl.style.top = "16px";
+}
+
+function bindNetworkGraphHover(containerEl, rows) {
+  if (!containerEl || !Array.isArray(rows)) return;
+  const nodes = containerEl.querySelectorAll(".network-node");
+  nodes.forEach((node) => {
+    const idx = Number(node.getAttribute("data-node-idx") || "-1");
+    const row = idx >= 0 && idx < rows.length ? rows[idx] : null;
+    node.addEventListener("mouseenter", (event) => {
+      if (!networkTooltipPinned) showNetworkTooltip(row, event.clientX, event.clientY);
+    });
+    node.addEventListener("mousemove", (event) => {
+      if (!networkTooltipPinned) showNetworkTooltip(row, event.clientX, event.clientY);
+    });
+    node.addEventListener("mouseleave", () => {
+      if (!networkTooltipPinned) hideNetworkTooltip();
+    });
+    node.addEventListener("click", () => pinNetworkTooltip(row));
+  });
+}
+
+function openNetworkModal() {
+  if (!networkModalEl || !networkModalGraphEl || !networkGraphEl) return;
+  if (!networkGraphEl.querySelector("svg")) return;
+  networkModalGraphEl.innerHTML = networkGraphEl.innerHTML;
+  networkModalEl.hidden = false;
+  document.body.style.overflow = "hidden";
+  bindNetworkGraphHover(networkModalGraphEl, networkLastRows);
+}
+
+function closeNetworkModal() {
+  if (!networkModalEl || !networkModalGraphEl) return;
+  networkModalEl.hidden = true;
+  networkModalGraphEl.innerHTML = "";
+  document.body.style.overflow = "";
+  networkTooltipPinned = false;
+  hideNetworkTooltip();
+}
+
+function renderNetworkResults(seedWork, rankedRows) {
+  if (!networkGraphEl || !networkListEl) return;
+  if (!rankedRows.length) {
+    networkGraphEl.innerHTML =
+      "<p class='placeholder'>No related papers were found. Try a citation with DOI or a clearer APA title.</p>";
+    networkListEl.innerHTML = "";
+    if (networkExpandBtn) networkExpandBtn.disabled = true;
+    return;
+  }
+
+  networkLastRows = rankedRows.slice(0, 24);
+  networkGraphEl.innerHTML = buildNetworkSvg(seedWork, rankedRows);
+  bindNetworkGraphHover(networkGraphEl, networkLastRows);
+  if (networkExpandBtn) networkExpandBtn.disabled = false;
+  const list = rankedRows.map((row, idx) => {
+    const title = escapeHtml(String(row.title).slice(0, 220));
+    const rel = escapeHtml(relationLabel(row.relType));
+    const venue = escapeHtml(row.venue || "Unknown venue");
+    const year = escapeHtml(row.year || "n.d.");
+    const url = row.url ? `<a href="${escapeHtml(row.url)}" target="_blank" rel="noopener noreferrer">Open record</a>` : "";
+    const scholar = `<a href="${toScholarUrl(row.title)}" target="_blank" rel="noopener noreferrer">Google Scholar</a>`;
+    return `<article class="paper-card">
+      <h3>#${idx + 1} ${title}</h3>
+      <div class="score">Similarity: ${row.similarity}%</div>
+      <p class="paper-meta"><strong>Relation:</strong> ${rel}</p>
+      <p class="paper-meta"><strong>Year / Venue:</strong> ${year} | ${venue}</p>
+      <p class="links">${url ? `${url} · ` : ""}${scholar}</p>
+    </article>`;
+  });
+  networkListEl.innerHTML = list.join("");
+}
+
+async function runNetworkSearchFromApa(apaLine) {
+  if (!apaLine || !apaLine.trim()) throw new Error("Please provide one APA citation.");
+  const seedWork = await resolveApaLineToOpenAlexWork(apaLine.trim());
+  if (!seedWork || !seedWork.id) {
+    throw new Error("Could not resolve this citation to a paper. Add DOI if possible.");
+  }
+  networkLastSeed = seedWork;
+  const candidates = await fetchNetworkCandidateWorks(seedWork);
+  const ranked = candidates
+    .map(({ work, relType }) => {
+      const venue = openAlexVenue(work);
+      const title = work.display_name || work.title || "Untitled";
+      const similarity = similarityToSeedWork(seedWork, work);
+      return {
+        id: work.id,
+        title,
+        venue,
+        year: String(work.publication_year || "n.d."),
+        abstract: openAlexAbstractToText(work.abstract_inverted_index) || "",
+        citationCount: typeof work.cited_by_count === "number" ? work.cited_by_count : 0,
+        similarity,
+        relType,
+        url: work.id || null
+      };
+    })
+    .sort((a, b) => b.similarity - a.similarity);
+
+  return { seedWork, ranked };
+}
+
 function switchWorkspace(target) {
   if (typeof window.sdaSwitchTab === "function") {
     window.sdaSwitchTab(target);
     return;
   }
   const isJournal = target === "journal";
+  const isLiterature = target === "literature";
+  const isNetwork = target === "network";
   if (tabJournal) tabJournal.classList.toggle("active", isJournal);
-  if (tabLiterature) tabLiterature.classList.toggle("active", !isJournal);
+  if (tabLiterature) tabLiterature.classList.toggle("active", isLiterature);
+  if (tabNetwork) tabNetwork.classList.toggle("active", isNetwork);
   if (journalView) journalView.classList.toggle("active-workspace", isJournal);
-  if (literatureView) literatureView.classList.toggle("active-workspace", !isJournal);
+  if (literatureView) literatureView.classList.toggle("active-workspace", isLiterature);
+  if (networkView) networkView.classList.toggle("active-workspace", isNetwork);
 }
 
 function resetApp() {
   if (form) form.reset();
   if (literatureForm) literatureForm.reset();
+  if (networkForm) networkForm.reset();
 
   if (form) {
     form.querySelectorAll('input[name="quartile"]').forEach((el) => {
@@ -2609,6 +3019,13 @@ function resetApp() {
     deepDiveBtn.textContent = "Deep dive (citing papers)";
   }
   if (exportLiteratureExcelBtn) exportLiteratureExcelBtn.disabled = true;
+  networkLastSeed = null;
+  if (networkValidationEl) networkValidationEl.textContent = "";
+  if (networkGraphEl) networkGraphEl.innerHTML = "<p class='placeholder'>Submit one APA citation to generate a similarity network.</p>";
+  if (networkListEl) networkListEl.innerHTML = "";
+  networkLastRows = [];
+  if (networkExpandBtn) networkExpandBtn.disabled = true;
+  closeNetworkModal();
 
   catalogueCursorState = null;
   catalogueAccumulatedResults = [];
@@ -2961,7 +3378,30 @@ if (exportPdfBtn) exportPdfBtn.addEventListener("click", exportResultsAsPdf);
 /* Tabs use onclick + sdaSwitchTab in index.html so they work if listener registration below is skipped */
 if (tabJournal) tabJournal.addEventListener("click", () => switchWorkspace("journal"));
 if (tabLiterature) tabLiterature.addEventListener("click", () => switchWorkspace("literature"));
+if (tabNetwork) tabNetwork.addEventListener("click", () => switchWorkspace("network"));
 if (resetAppBtn) resetAppBtn.addEventListener("click", resetApp);
+if (networkExpandBtn) networkExpandBtn.addEventListener("click", openNetworkModal);
+if (networkModalCloseBtn) networkModalCloseBtn.addEventListener("click", closeNetworkModal);
+if (networkModalEl) {
+  networkModalEl.addEventListener("click", (event) => {
+    if (event.target === networkModalEl) closeNetworkModal();
+  });
+}
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && networkModalEl && !networkModalEl.hidden) {
+    closeNetworkModal();
+  }
+});
+document.addEventListener("click", (event) => {
+  if (!networkTooltipPinned || !networkTooltipEl) return;
+  const target = event.target;
+  const inTooltip = networkTooltipEl.contains(target);
+  const inNode = target && target.classList && target.classList.contains("network-node");
+  if (!inTooltip && !inNode) {
+    networkTooltipPinned = false;
+    hideNetworkTooltip();
+  }
+});
 
 const journalSubTabMatchBtn = document.getElementById("journalSubTabMatch");
 const journalSubTabCatalogueBtn = document.getElementById("journalSubTabCatalogue");
@@ -3023,6 +3463,40 @@ if (literatureForm) {
 
     if (deepDiveBtn) deepDiveBtn.textContent = "Deep dive (citing papers)";
     renderLiteratureWorkspace();
+  });
+}
+
+if (networkForm) {
+  networkForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (networkValidationEl) networkValidationEl.textContent = "";
+    const apaLine = networkApaInputEl ? networkApaInputEl.value.trim() : "";
+    if (!apaLine) {
+      if (networkValidationEl) networkValidationEl.textContent = "Please enter one APA citation.";
+      return;
+    }
+    if (networkGraphEl) {
+      networkGraphEl.innerHTML = "<p class='placeholder'>Resolving citation and building network graph...</p>";
+    }
+    if (networkListEl) networkListEl.innerHTML = "";
+    if (networkExpandBtn) networkExpandBtn.disabled = true;
+    try {
+      const { seedWork, ranked } = await runNetworkSearchFromApa(apaLine);
+      if (networkValidationEl) {
+        const seedTitle = String(seedWork.display_name || seedWork.title || "Seed paper");
+        networkValidationEl.innerHTML = `Resolved seed paper: <strong>${escapeHtml(
+          seedTitle
+        )}</strong>. Showing related works ranked by lexical similarity to this seed.`;
+      }
+      renderNetworkResults(seedWork, ranked);
+    } catch (err) {
+      if (networkValidationEl) networkValidationEl.textContent = err.message || "Network search failed.";
+      if (networkGraphEl) {
+        networkGraphEl.innerHTML = "<p class='placeholder'>Could not build network for this citation. Try adding DOI.</p>";
+      }
+      if (networkListEl) networkListEl.innerHTML = "";
+      if (networkExpandBtn) networkExpandBtn.disabled = true;
+    }
   });
 }
 
