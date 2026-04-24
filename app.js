@@ -786,6 +786,12 @@ const networkModalEl = document.getElementById("networkModal");
 const networkModalGraphEl = document.getElementById("networkModalGraph");
 const networkModalCloseBtn = document.getElementById("networkModalCloseBtn");
 const networkTooltipEl = document.getElementById("networkTooltip");
+const infoGuideBtn = document.getElementById("infoGuideBtn");
+const infoGuideModal = document.getElementById("infoGuideModal");
+const infoGuideCloseBtn = document.getElementById("infoGuideCloseBtn");
+const howToUseBtn = document.getElementById("howToUseBtn");
+const howToUseModal = document.getElementById("howToUseModal");
+const howToUseCloseBtn = document.getElementById("howToUseCloseBtn");
 
 let literaturePrimaryRows = [];
 let literatureDeepRows = [];
@@ -836,6 +842,63 @@ const HIGH_VALUE_PHRASES = [
   "fuzzy bayesian", "fuzzy-bayesian", "gaussian fuzzy numbers", "hierarchical bayesian", "jags", "outliers", "nonlinear"
 ];
 
+const SCIMAGO_CATEGORY_PROTOTYPES = [
+  {
+    id: "remote_sensing_env",
+    label: "Remote Sensing / Earth Observation",
+    keywords: ["remote sensing", "satellite", "landsat", "sentinel", "earth observation", "ndvi", "burn severity", "land cover"],
+    fields: ["Earth & environmental science"]
+  },
+  {
+    id: "wildfire_fire_science",
+    label: "Wildfire / Fire Science",
+    keywords: ["wildfire", "bushfire", "forest fire", "fire risk", "fire spread", "burnt area", "fuel moisture", "fire danger"],
+    fields: ["Earth & environmental science"]
+  },
+  {
+    id: "env_informatics",
+    label: "Environmental Informatics",
+    keywords: ["ecological informatics", "environmental informatics", "geospatial", "spatial data", "environmental monitoring", "decision support"],
+    fields: ["Earth & environmental science", "Information science & scientometrics"]
+  },
+  {
+    id: "ml_ai",
+    label: "Machine Learning / AI",
+    keywords: ["machine learning", "artificial intelligence", "deep learning", "neural network", "classification", "prediction", "feature engineering"],
+    fields: ["Computer science & intelligent systems", "Computer vision & robotics"]
+  },
+  {
+    id: "stats_bayesian",
+    label: "Statistics / Bayesian Modeling",
+    keywords: ["bayesian", "posterior", "uncertainty", "imputation", "hierarchical model", "monte carlo", "statistical inference"],
+    fields: ["Statistics & biostatistics", "Statistics & computing"]
+  },
+  {
+    id: "hydrology_climate",
+    label: "Hydrology / Climate",
+    keywords: ["hydrology", "watershed", "groundwater", "streamflow", "climate", "evapotranspiration", "flood forecast"],
+    fields: ["Earth & environmental science"]
+  },
+  {
+    id: "astronomy_exoplanets",
+    label: "Astronomy / Exoplanets",
+    keywords: ["exoplanet", "astronomy", "astrophysics", "cosmology", "kepler", "tess", "stellar", "transit"],
+    fields: ["Astronomy & astrophysics"]
+  },
+  {
+    id: "econometrics",
+    label: "Econometrics",
+    keywords: ["econometrics", "panel data", "causal inference", "difference-in-differences", "instrumental variable", "forecasting"],
+    fields: ["Economics & econometrics"]
+  },
+  {
+    id: "health_clinical",
+    label: "Health / Clinical",
+    keywords: ["clinical", "patient", "trial", "diagnosis", "oncology", "hospital", "epidemiology", "medical"],
+    fields: ["Medicine & health sciences"]
+  }
+];
+
 function tokenize(text) {
   return text
     .toLowerCase()
@@ -849,6 +912,61 @@ function lines(text) {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+function softmax(values, temperature) {
+  const t = Math.max(0.05, Number(temperature) || 1);
+  const scaled = values.map((v) => v / t);
+  const maxV = Math.max(...scaled);
+  const exps = scaled.map((v) => Math.exp(v - maxV));
+  const sum = exps.reduce((a, b) => a + b, 0) || 1;
+  return exps.map((e) => e / sum);
+}
+
+function buildScimagoCategoryProfile(userData) {
+  const text = manuscriptCoreText(userData);
+  const tokens = new Set(tokenize(text));
+  const raw = SCIMAGO_CATEGORY_PROTOTYPES.map((cat) => {
+    let score = 0;
+    for (let i = 0; i < cat.keywords.length; i += 1) {
+      const kw = cat.keywords[i].toLowerCase();
+      if (kw.includes(" ")) {
+        if (text.includes(kw)) score += 2.4;
+      } else if (tokens.has(kw)) {
+        score += 1.4;
+      }
+    }
+    return Math.max(0.01, score);
+  });
+  const probs = softmax(raw, 0.7);
+  const memberships = SCIMAGO_CATEGORY_PROTOTYPES.map((cat, i) => ({
+    id: cat.id,
+    label: cat.label,
+    fields: cat.fields,
+    probability: probs[i],
+    raw: raw[i]
+  })).sort((a, b) => b.probability - a.probability);
+  return {
+    memberships,
+    top: memberships.slice(0, 3)
+  };
+}
+
+function journalCategoryAffinity(journal, category) {
+  const blob = `${journal.name} ${journal.scopeKeywords.join(" ")} ${journal.methodsFocus.join(" ")} ${journal.researchField || ""}`.toLowerCase();
+  let hit = 0;
+  for (let i = 0; i < SCIMAGO_CATEGORY_PROTOTYPES.length; i += 1) {
+    if (SCIMAGO_CATEGORY_PROTOTYPES[i].id !== category.id) continue;
+    const kws = SCIMAGO_CATEGORY_PROTOTYPES[i].keywords;
+    for (let k = 0; k < kws.length; k += 1) {
+      const kw = kws[k].toLowerCase();
+      if (blob.includes(kw)) hit += kw.includes(" ") ? 1.8 : 1;
+    }
+    break;
+  }
+  const fieldMatch = category.fields && category.fields.indexOf(journal.researchField || "") !== -1 ? 1 : 0;
+  const denom = 12;
+  return Math.max(0, Math.min(1, hit / denom + fieldMatch * 0.32));
 }
 
 function toScholarUrl(query) {
@@ -2108,6 +2226,16 @@ function scoreJournal(journal, userData) {
   }
   score += refVenueBoost;
 
+  const scimagoProfile = userData.scimagoProfile || buildScimagoCategoryProfile(userData);
+  const catTop = scimagoProfile.top || [];
+  let categoryPrior = 0;
+  for (let ci = 0; ci < catTop.length; ci += 1) {
+    const c = catTop[ci];
+    const aff = journalCategoryAffinity(journal, c);
+    categoryPrior += c.probability * aff;
+  }
+  score += categoryPrior * 58;
+
   const hintedFields = manuscriptHintedFields(core);
   const jField = journal.researchField || "";
   if (hintedFields.length) {
@@ -2151,6 +2279,15 @@ function scoreJournal(journal, userData) {
   if (refVenueBoost >= 14) {
     fitReasons.push("Journal name (or distinctive title words) appears in your reference list—strong signal you already publish or cite this venue family.");
   }
+  if (catTop.length) {
+    const catText = catTop
+      .map((c) => `${c.label} (${Math.round(c.probability * 100)}%)`)
+      .join(", ");
+    fitReasons.push(`SCImago-style category memberships from manuscript text: ${catText}`);
+    if (categoryPrior > 0.22) {
+      fitReasons.push("Category prior boost: journal aligns with your highest-membership manuscript categories.");
+    }
+  }
   if (!fitReasons.length) fitReasons.push("Weak direct match—results are heuristic from your text vs. this app’s journal catalogue");
 
   return {
@@ -2171,7 +2308,7 @@ function collectFormData() {
   const rawCount = Number(document.getElementById("resultCount").value || "5");
   const resultCount = Math.max(1, Math.min(100, Number.isFinite(rawCount) ? Math.round(rawCount) : 5));
 
-  return {
+  const data = {
     keywords,
     titleAbstract,
     methodology,
@@ -2180,6 +2317,8 @@ function collectFormData() {
     selectedPublishers: selectedPublishers.length ? selectedPublishers : uniquePublishers.slice(),
     resultCount
   };
+  data.scimagoProfile = buildScimagoCategoryProfile(data);
+  return data;
 }
 
 function validate(data) {
@@ -3078,6 +3217,9 @@ function resetApp() {
   networkLastRows = [];
   if (networkExpandBtn) networkExpandBtn.disabled = true;
   closeNetworkModal();
+  if (infoGuideModal) infoGuideModal.hidden = true;
+  if (howToUseModal) howToUseModal.hidden = true;
+  document.body.style.overflow = "";
 
   catalogueCursorState = null;
   catalogueAccumulatedResults = [];
@@ -3412,6 +3554,10 @@ if (form) {
       return;
     }
     const journalWarning = journalMissingFieldWarning(data);
+    const topCats = (data.scimagoProfile && data.scimagoProfile.top ? data.scimagoProfile.top : [])
+      .map((c) => `${c.label}: ${Math.round(c.probability * 100)}%`)
+      .join(" | ");
+    const journalStatus = `${journalWarning ? `${journalWarning} ` : ""}${topCats ? `Category model: ${topCats}` : ""}`.trim();
 
     if (resultsEl) {
       resultsEl.innerHTML =
@@ -3421,10 +3567,10 @@ if (form) {
     try {
       const merged = await buildMergedJournalMatches(data);
       renderMergedJournalResults(merged, data);
-      if (validationEl) validationEl.textContent = journalWarning || "";
+      if (validationEl) validationEl.textContent = journalStatus;
     } catch (err) {
       if (validationEl) {
-        validationEl.textContent = `${journalWarning ? `${journalWarning} ` : ""}OpenAlex journal search failed (${err.message}). Showing curated catalogue only.`;
+        validationEl.textContent = `${journalStatus ? `${journalStatus} ` : ""}OpenAlex journal search failed (${err.message}). Showing curated catalogue only.`;
       }
       const top = JOURNALS.map((journal) => scoreJournal(journal, data))
         .sort((a, b) => b.score - a.score)
@@ -3448,9 +3594,59 @@ if (networkModalEl) {
     if (event.target === networkModalEl) closeNetworkModal();
   });
 }
+if (infoGuideBtn && infoGuideModal) {
+  infoGuideBtn.addEventListener("click", () => {
+    infoGuideModal.hidden = false;
+    if (howToUseModal) howToUseModal.hidden = true;
+    document.body.style.overflow = "hidden";
+  });
+}
+if (infoGuideCloseBtn && infoGuideModal) {
+  infoGuideCloseBtn.addEventListener("click", () => {
+    infoGuideModal.hidden = true;
+    document.body.style.overflow = "";
+  });
+}
+if (infoGuideModal) {
+  infoGuideModal.addEventListener("click", (event) => {
+    if (event.target === infoGuideModal) {
+      infoGuideModal.hidden = true;
+      document.body.style.overflow = "";
+    }
+  });
+}
+if (howToUseBtn && howToUseModal) {
+  howToUseBtn.addEventListener("click", () => {
+    howToUseModal.hidden = false;
+    if (infoGuideModal) infoGuideModal.hidden = true;
+    document.body.style.overflow = "hidden";
+  });
+}
+if (howToUseCloseBtn && howToUseModal) {
+  howToUseCloseBtn.addEventListener("click", () => {
+    howToUseModal.hidden = true;
+    document.body.style.overflow = "";
+  });
+}
+if (howToUseModal) {
+  howToUseModal.addEventListener("click", (event) => {
+    if (event.target === howToUseModal) {
+      howToUseModal.hidden = true;
+      document.body.style.overflow = "";
+    }
+  });
+}
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && networkModalEl && !networkModalEl.hidden) {
-    closeNetworkModal();
+  if (event.key === "Escape") {
+    if (networkModalEl && !networkModalEl.hidden) closeNetworkModal();
+    if (infoGuideModal && !infoGuideModal.hidden) {
+      infoGuideModal.hidden = true;
+      document.body.style.overflow = "";
+    }
+    if (howToUseModal && !howToUseModal.hidden) {
+      howToUseModal.hidden = true;
+      document.body.style.overflow = "";
+    }
   }
 });
 document.addEventListener("click", (event) => {
